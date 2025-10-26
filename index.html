@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="./libs/d3.js"></script>
+    <script src="libs/d3jstopojson.v1.js"></script>
+    <title>MA Map</title>
+    <style>
+        #tooltip {
+            position: absolute;
+            opacity: 0;
+            top: 0;
+            left: 0;
+            width: auto;
+            padding: 10px;
+            background: white;
+            font-family: sans-serif;
+            font-size: medium;
+            border-radius: 2px;
+            line-height: 1;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+            pointer-events: none
+        }
+        
+        path {
+            stroke-width: .5px;
+            stroke: black
+        }
+        
+        path:hover {
+            opacity: .6;
+            stroke: black;
+            stroke-width: 4px;
+        }
+
+        .container{
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        path.highlight {
+            stroke: #000;
+            stroke-width: 3px;
+            opacity: 1 !important;
+        }
+
+
+    </style>
+
+</head>
+
+<body>
+    <div id="tooltip"></div>
+    <div class="container">
+        <!-- Title goes here -->
+        <h1>Major Assignment 2</h1>
+        <!-- Name goes here -->
+        <h3>Troy Ventura</h3>
+
+        <div class="fig1"></div>
+        <div class="fig2"></div>
+        <div class="fig3"></div>
+
+
+    </div>
+    <script>
+    /*-------------------------------------------------------*/
+    /*------------------- Window setting --------------------*/
+    /*-------------------------------------------------------*/
+    const window_dims = {
+        width: window.innerWidth,
+        height: window.innerHeight
+    };
+
+    const svgWidth = window_dims.width / 2;
+    const svgHeight = window_dims.width / 3;
+
+    /*-------------------------------------------------------*/
+    /*-----------------parallel load data--------------------*/
+    /*-------------------------------------------------------*/
+    const MA_counties = "./data/towns.topojson";
+    const gini_index = "./data/gini_index.csv";
+
+    Promise.all([
+        d3.json(MA_counties),
+        d3.csv(gini_index)
+    ]).then(data => {
+        const topology_data = data[0];
+        const csv_data = data[1];
+
+        const margin = 30;
+
+        const projections = [
+            d3.geoAzimuthalEqualArea(),
+            d3.geoAlbersUsa(),
+            d3.geoAlbers(),
+            d3.geoMercator(),
+            d3.geoNaturalEarth1(),
+            d3.geoEqualEarth(),
+            d3.geoConicEqualArea(),
+            d3.geoEquirectangular(),
+            d3.geoOrthographic()
+        ];
+
+        const geojson = topojson.feature(topology_data, topology_data.objects.ma);
+
+        const projection = projections[3].fitSize(
+            [svgWidth - margin, svgHeight - margin],
+            geojson
+        );
+
+        const geoPath_generator = d3.geoPath().projection(projection);
+
+        /*-------------------------------------------------------*/
+        /*---------------- Legend Utility Function ---------------*/
+        /*-------------------------------------------------------*/
+        function addLegend(svg, colorScale, title, width, height) {
+            const legendWidth = 220;
+            const legendHeight = 12;
+            const legendMargin = 40;
+            const gradientId = "legend-gradient-" + Math.random().toString(36).substring(2);
+
+            const defs = svg.append("defs");
+            const gradient = defs.append("linearGradient")
+                .attr("id", gradientId)
+                .attr("x1", "0%")
+                .attr("x2", "100%");
+
+            const domain = colorScale.domain();
+            const numStops = 10;
+
+            // Handle both continuous and diverging scales
+            const tValues = d3.range(0, 1.0001, 1 / (numStops - 1));
+            const stops = tValues.map(t => {
+                let val;
+                if (domain.length === 3) {
+                    // Diverging (e.g. [-1000, 0, 1000])
+                    const mid = (domain[0] + domain[2]) / 2;
+                    val = d3.scaleLinear().domain([0, 0.5, 1]).range(domain)(t);
+                } else {
+                    val = domain[0] + t * (domain[1] - domain[0]);
+                }
+                return { offset: `${t * 100}%`, color: colorScale(val) };
+            });
+
+            stops.forEach(s => {
+                gradient.append("stop")
+                    .attr("offset", s.offset)
+                    .attr("stop-color", s.color);
+            });
+
+            const legendGroup = svg.append("g")
+                .attr("class", "legend")
+                .attr("transform", `translate(${width - legendWidth - legendMargin},${height - legendMargin})`);
+
+            legendGroup.append("rect")
+                .attr("width", legendWidth)
+                .attr("height", legendHeight)
+                .style("fill", `url(#${gradientId})`)
+                .style("stroke", "#ccc");
+
+            // Axis
+            const legendScale = d3.scaleLinear()
+                .domain([domain[0], domain[domain.length - 1]])
+                .range([0, legendWidth]);
+
+            const tickCount = domain.length === 3 ? 3 : 5;
+            const legendAxis = d3.axisBottom(legendScale)
+                .ticks(tickCount)
+                .tickSize(legendHeight + 3)
+                .tickFormat(d3.format(","));
+
+            legendGroup.append("g")
+                .attr("transform", `translate(0, ${legendHeight})`)
+                .call(legendAxis)
+                .select(".domain").remove();
+
+            legendGroup.append("text")
+                .attr("x", legendWidth / 2)
+                .attr("y", -8)
+                .attr("text-anchor", "middle")
+                .attr("font-size", "12px")
+                .attr("fill", "#333")
+                .text(title);
+        }
+
+        /*-------------------------------------------------------*/
+        /*----------------------MAP A----------------------------*/
+        /*-------------------------------------------------------*/
+        const generateMap1 = (topology_data, containerName, width, height, margin = 30) => {
+            const svg = d3.select(containerName).append("svg")
+                .attr("width", width)
+                .attr("height", height);
+
+            const tooltip = d3.select("#tooltip");
+
+            // Color scale for 1980 population
+            const popExtent = d3.extent(geojson.features, d => +d.properties.POP1980);
+            const linearScale = d3.scaleLinear().domain(popExtent).range([0, 1]);
+            const colorInterpolator = d3.interpolateRgbBasis(
+                ['#fee090', '#e0f3f8', '#91bfdb', '#4575b4']
+            );
+
+            svg.selectAll("path")
+                .data(geojson.features)
+                .enter()
+                .append("path")
+                .attr("d", d => geoPath_generator(d))
+                .attr("fill", d => colorInterpolator(linearScale(+d.properties.POP1980)))
+                .attr("stroke", "#333")
+                .attr("stroke-width", 0.5)
+                .on("mouseenter", (event, d) => {
+                    const townKey = (d.properties.TOWN || "").toLowerCase().trim();
+                    svg.selectAll("path").classed("highlight", false);
+                    svg.selectAll("path").filter(dd => (dd.properties.TOWN || "").toLowerCase().trim() === townKey)
+                        .classed("highlight", true);
+
+                    tooltip.transition().duration(200).style("opacity", 0.95);
+                    tooltip.html(`
+                        <strong>${d.properties.TOWN}</strong><br/>
+                        1980: ${(d.properties.POP1980 ? (+d.properties.POP1980).toLocaleString() : "N/A")}
+                    `)
+                        .style("left", event.pageX + 10 + "px")
+                        .style("top", event.pageY - 50 + "px");
+                })
+                .on("mousemove", event => {
+                    tooltip.style("left", event.pageX + 10 + "px").style("top", event.pageY - 50 + "px");
+                })
+                .on("mouseout", () => {
+                    tooltip.transition().duration(400).style("opacity", 0);
+                    svg.selectAll("path").classed("highlight", false);
+                });
+
+            // Create an adapted color scale for legend (maps numeric domain to color)
+            const legendScale = d3.scaleLinear()
+                .domain(popExtent)
+                .range([0, 1]);
+            const legendColor = val => colorInterpolator(legendScale(val));
+            legendColor.domain = () => popExtent;
+
+            addLegend(svg, legendColor, "Population (1980)", width, height);
+        };
+
+
+        /*-------------------------------------------------------*/
+        /*----------------------MAP B----------------------------*/
+        /*-------------------------------------------------------*/
+        const generateMap2 = (topology_data, containerName, width, height) => {
+            const svg = d3.select(containerName)
+                .append("svg")
+                .attr("width", width)
+                .attr("height", height);
+
+            const tooltip = d3.select("#tooltip");
+            const geojson = topojson.feature(topology_data, topology_data.objects.ma);
+
+            geojson.features.forEach(d => {
+                d.properties.popChange = +d.properties.POP2010 - +d.properties.POP1980;
+            });
+
+            const colorInterpolator = d3.interpolateRdYlBu;
+            const minChange = d3.min(geojson.features, d => d.properties.popChange);
+            const maxChange = d3.max(geojson.features, d => d.properties.popChange);
+
+            const colorScale = d3.scaleDiverging()
+                .domain([minChange, 0, maxChange])
+                .interpolator(colorInterpolator);
+
+            svg.selectAll("path")
+                .data(geojson.features)
+                .enter()
+                .append("path")
+                .attr("d", d => geoPath_generator(d))
+                .attr("fill", d => colorScale(d.properties.popChange))
+                .attr("stroke", "#333")
+                .attr("stroke-width", 0.5)
+                .on("mouseenter", (event, d) => {
+                    const townKey = (d.properties.TOWN || "").toLowerCase().trim();
+                    svg.selectAll("path").classed("highlight", false);
+                    svg.selectAll("path").filter(dd => (dd.properties.TOWN || "").toLowerCase().trim() === townKey)
+                        .classed("highlight", true);
+
+                    tooltip.transition().duration(200).style("opacity", 0.95);
+                    tooltip.html(`
+                        <strong>${d.properties.TOWN}</strong><br/>
+                        Change: ${d.properties.popChange.toLocaleString()}
+                    `)
+                        .style("left", event.pageX + 10 + "px")
+                        .style("top", event.pageY - 50 + "px");
+                })
+                .on("mousemove", event => {
+                    tooltip.style("left", event.pageX + 10 + "px").style("top", event.pageY - 50 + "px");
+                })
+                .on("mouseout", () => {
+                    tooltip.transition().duration(400).style("opacity", 0);
+                    svg.selectAll("path").classed("highlight", false);
+                });
+
+            addLegend(svg, colorScale, "Population Change (1980–2010)", width, height);
+        };
+
+        /*-------------------------------------------------------*/
+        /*----------------------MAP C----------------------------*/
+        /*-------------------------------------------------------*/
+        /*-------------------------------------------------------*/
+        /*-------------------------------------------------------*/
+        const countyNames = {
+        "25001": "Barnstable County",
+        "25003": "Berkshire County",
+        "25005": "Bristol County",
+        "25007": "Dukes County",
+        "25009": "Essex County",
+        "25011": "Franklin County",
+        "25013": "Hampden County",
+        "25015": "Hampshire County",
+        "25017": "Middlesex County",
+        "25019": "Nantucket County",
+        "25021": "Norfolk County",
+        "25023": "Plymouth County",
+        "25025": "Suffolk County",
+        "25027": "Worcester County"
+        };
+
+        const generateMap3 = (csv_data, topology_data, containerName, width, height) => {
+            const svg = d3.select(containerName)
+                .append("svg")
+                .attr("width", width)
+                .attr("height", height);
+
+            const geojson = topojson.feature(topology_data, topology_data.objects.ma);
+
+            // --- Prepare Gini data by county ---
+            const giniAllYearsByCounty = {};
+            csv_data.forEach(d => {
+                const fips = d.id.slice(-5);
+                if (!giniAllYearsByCounty[fips]) giniAllYearsByCounty[fips] = [];
+                giniAllYearsByCounty[fips].push({
+                    year: +d.year,
+                    value: +d["Estimate!!Gini Index"]
+                });
+            });
+
+            // Extract 2019 Gini values for scale
+            const gini2019values = Object.entries(giniAllYearsByCounty)
+                .map(([fips, arr]) => arr.find(x => x.year === 2019)?.value)
+                .filter(v => v != null);
+
+            const colorScale = d3.scaleSequential()
+                .domain(d3.extent(gini2019values))
+                .interpolator(d3.interpolateRgbBasis(["#f7fbff", "#6baed6", "#08306b"]));
+
+            const tooltip = d3.select("#tooltip");
+
+            // --- Draw towns ---
+            svg.selectAll("path")
+                .data(geojson.features)
+                .enter()
+                .append("path")
+                .attr("d", d => geoPath_generator(d))
+                .attr("fill", d => {
+                    const countyFips = d.properties.FIPS_STCO.toString().padStart(5, "0");
+                    const countyData = giniAllYearsByCounty[countyFips];
+                    if (!countyData) return "#ccc";
+                    const gini2019 = countyData.find(x => x.year === 2019)?.value;
+                    return gini2019 ? colorScale(gini2019) : "#ccc";
+                })
+                .attr("stroke", "#333")
+                .attr("stroke-width", 0.5)
+                .on("mouseenter", (event, d) => {
+                    const countyFips = d.properties.FIPS_STCO.toString().padStart(5, "0");
+                    const countyName = countyNames[countyFips] || "Unknown County";
+                    const townName = d.properties.TOWN;
+                    const timeline = giniAllYearsByCounty[countyFips];
+
+                    // 🔹 Highlight all towns in the same county
+                    svg.selectAll("path").classed("highlight", false);
+                    svg.selectAll("path")
+                        .filter(dd => dd.properties.FIPS_STCO.toString().padStart(5, "0") === countyFips)
+                        .classed("highlight", true);
+
+                    // 🔹 Tooltip
+                    tooltip
+                        .style("display", "flex")
+                        .style("flex-direction", "column")
+                        .style("gap", "6px")
+                        .transition()
+                        .duration(150)
+                        .style("opacity", .95);
+
+                    tooltip.html(`
+                        <div><strong>${townName}</strong> — ${countyName}</div>
+                        <div id="mini-chart"></div>
+                    `);
+
+                    drawMiniChart(timeline, "#mini-chart");
+
+                    tooltip
+                        .style("left", (event.pageX + 10) + "px")
+                        .style("top",  (event.pageY - 50) + "px");
+                })
+                .on("mousemove", (event) => {
+                    tooltip
+                        .style("left", (event.pageX + 10) + "px")
+                        .style("top",  (event.pageY - 50) + "px");
+                })
+                .on("mouseleave", () => {
+                    tooltip.transition().duration(150).style("opacity", 0);
+                    svg.selectAll("path").classed("highlight", false);
+                });
+
+            // --- Add legend ---
+            const legendColorScale = t => colorScale(t);
+            legendColorScale.domain = colorScale.domain;
+            addLegend(svg, legendColorScale, "Gini Index (2019)", width, height);
+            };
+
+            function drawMiniChart(data, containerSelector) {
+            d3.select(containerSelector).selectAll("*").remove();
+            if (!data || data.length === 0) return;
+
+            data = data.sort((a, b) => a.year - b.year);
+
+            const margin = { top: 5, right: 10, bottom: 18, left: 28 };
+            const width = 180 - margin.left - margin.right;
+            const height = 90 - margin.top - margin.bottom;
+
+            const svg = d3.select(containerSelector)
+                .append("svg")
+                .attr("width", width + margin.left + margin.right)
+                .attr("height", height + margin.top + margin.bottom)
+                .append("g")
+                .attr("transform", `translate(${margin.left},${margin.top})`);
+
+            const x = d3.scaleLinear()
+                .domain(d3.extent(data, d => d.year))
+                .range([0, width]);
+
+            const y = d3.scaleLinear()
+                .domain([d3.min(data, d => d.value) * 0.98, d3.max(data, d => d.value) * 1.02])
+                .range([height, 0]);
+
+            const xAxis = d3.axisBottom(x)
+                .ticks(4)
+                .tickFormat(d3.format("d"));
+
+            const yAxis = d3.axisLeft(y)
+                .ticks(3);
+
+            svg.append("g")
+                .attr("transform", `translate(0,${height})`)
+                .call(xAxis)
+                .selectAll("text")
+                .style("font-size", "8px");
+
+            svg.append("g")
+                .call(yAxis)
+                .selectAll("text")
+                .style("font-size", "8px");
+
+            const line = d3.line()
+                .x(d => x(d.year))
+                .y(d => y(d.value))
+                .curve(d3.curveMonotoneX);
+
+            svg.append("path")
+                .datum(data)
+                .attr("fill", "none")
+                .attr("stroke", "steelblue")
+                .attr("stroke-width", 1.5)
+                .attr("d", line);
+
+            const last = data[data.length - 1];
+            svg.append("circle")
+                .attr("cx", x(last.year))
+                .attr("cy", y(last.value))
+                .attr("r", 3)
+                .attr("fill", "steelblue");
+            }
+
+
+        // Render all three maps
+        generateMap1(topology_data, ".fig1", svgWidth, svgHeight);
+        generateMap2(topology_data, ".fig2", svgWidth, svgHeight);
+        generateMap3(csv_data, topology_data, ".fig3", svgWidth, svgHeight);
+
+        
+        });
+    
+        app.get('/api/books/:isbn', (req,resp) => {
+            // use mongoose to retrieve all books from Mongo
+            Book.find({isbn10: req.params.isbn},
+                function(err, data) {
+                    if (err) {
+                        resp.json({ message: 'Book not found' });
+                    } else {
+                        resp.json(data);
+                    }
+                });
+    });
+
+    </script>
+
+ 
+</body>
+
+</html>
