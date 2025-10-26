@@ -377,13 +377,12 @@
                     const townName = d.properties.TOWN;
                     const timeline = giniAllYearsByCounty[countyFips];
 
-                    // 🔹 Highlight all towns in the same county
+                    // Highlight all towns in the same county
                     svg.selectAll("path").classed("highlight", false);
                     svg.selectAll("path")
                         .filter(dd => dd.properties.FIPS_STCO.toString().padStart(5, "0") === countyFips)
                         .classed("highlight", true);
 
-                    // 🔹 Tooltip
                     tooltip
                         .style("display", "flex")
                         .style("flex-direction", "column")
